@@ -32,100 +32,104 @@ library(sensitivity) #Use to create Sobel analysis
 
 1.  Implement this model as a function in R
 
-    Great! Let's pull from our R script that we have already made
+Great! Let's pull from our R script that we have already made
 
-    ```{r}
-    # Source the function from our R script
-    source("canopy_growth.R")
-    ```
+```{r}
+# Source the function from our R script
+source("canopy_growth.R")
+```
 
 2.  Run the model for 300 years with the specified initial values(Using the ode solver)
 
-    ```{r}
-    #let's set some initial conditions
-    initial_carbon = 10
-    years = seq_along(1:300)
-    parameters <- c(r = 0.01, thresh = 50, g = 2, K = 250)
+```{r}
+#let's set some initial conditions
+initial_carbon = 10
+years = seq_along(1:300)
+parameters <- c(r = 0.01, thresh = 50, g = 2, K = 250)
 
-    # run the solver
-    Canopy = ode(y=initial_carbon, times=years, func=canopy_growth, parms = parameters) %>% 
-      as.data.frame()  
-    colnames(Canopy)=c("time","Carbon")
-    ```
+# run the solver
+Canopy = ode(y=initial_carbon, times=years, func=canopy_growth, parms = parameters) %>% 
+  as.data.frame()  
+colnames(Canopy)=c("time","Carbon")
+
+# peek at the df
+#head(Canopy, 3)
+```
 
 3.  Graph the results from the above calculations
 
-    ```{r}
-    Canopy %>% 
-      ggplot(aes(x = time, y = Carbon))+
-      geom_point(color = 'forestgreen', size = 2)+
-      labs(title = "Forest Size (kgC)",
-           x = "Time (years)",
-           y = "Carbon (kg)")
-    ```
+```{r}
+Canopy %>% 
+  ggplot(aes(x = time, y = Carbon))+
+  geom_point(color = 'forestgreen', size = 2)+
+  labs(title = "Forest Size (kgC)",
+       x = "Time (years)",
+       y = "Carbon (kg)")
+```
 
 4.  Now lets run a sensitivity analysis for our parameters
 
-    ```{r}
-    #------------------------------------------------
-    #----------Create our parameter sets-------------
-    #-------------------------------------------------
-    # want to learn about sensitivity to growth rates (r & g) and carrying capacity (K)
-    # set the number of parameters
-    np=2000
-    K = rnorm(mean=250, sd=25, n=np)
-    r = rnorm(mean=0.01, sd=0.001, n=np)
-    g = rnorm(mean=2, sd=0.2, n=np)
-    X1 = cbind.data.frame(r=r, K=K, g=g)
+```{r}
+#------------------------------------------------
+#----    Create our parameter sets           ----
+#------------------------------------------------
+# want to learn about sensitivity to growth rates (r & g) and carrying capacity (K)
+# set the number of parameters
+np=2000
+K = rnorm(mean=250, sd=25, n=np)
+r = rnorm(mean=0.01, sd=0.001, n=np)
+g = rnorm(mean=2, sd=0.2, n=np)
+X1 = cbind.data.frame(r=r, K=K, g=g)
 
-    np=2000
-    K = rnorm(mean=250, sd=25, n=np)
-    r = rnorm(mean=0.01, sd=0.001, n=np)
-    g = rnorm(mean=2, sd=0.2, n=np)
-    X2 = cbind.data.frame(r=r, K=K, g=g)
+np=2000
+K = rnorm(mean=250, sd=25, n=np)
+r = rnorm(mean=0.01, sd=0.001, n=np)
+g = rnorm(mean=2, sd=0.2, n=np)
+X2 = cbind.data.frame(r=r, K=K, g=g)
 
-    # fix any negative values and they are not meaningful
-    X1 = X1 %>% map_df(pmax, 0.0)
-    X2 = X2 %>% map_df(pmax, 0.0)
+# fix any negative values and they are not meaningful
+X1 = X1 %>% map_df(pmax, 0.0)
+X2 = X2 %>% map_df(pmax, 0.0)
 
-    #------------------------------------------------
-    #----------Create our sobel object---------------
-    #-------------------------------------------------
+#------------------------------------------------
+#----          Create our sobel object       ----
+#------------------------------------------------
+# create our sobel object and get sets of parameters for running the model
+sens_C = sobolSalt(model = NULL,X1,X2, nboot = 300)
 
-    # create our sobel object and get sets ofparameters for running the model
-    sens_C = sobolSalt(model = NULL,X1,X2, nboot = 300)
+# our parameter sets are
+head(sens_C$X)
+# lets add names 
+colnames(sens_C$X) = c("r","K",'g')
 
-    # our parameter sets are
-    head(sens_C$X)
-    # lets add names 
-    colnames(sens_C$X) = c("r","K",'g')
+#------------------------------------------------
+#----    Run the ODE Solver with Sobel se    ----
+#------------------------------------------------
+# Create a function to compute the maximum forest size
+compute_metrics = function(result){
+  maxsize = max(result$C)
+  return(list(maxsize=maxsize))}
 
-    #------------------------------------------------
-    #--------Run the ODE Solver with Sobel set--------
-    #-------------------------------------------------
-    # Create a function to cmopute the maximum forest size
-    compute_metrics = function(result){
-      maxsize = max(result$C)
-    return(list(maxsize=maxsize))}
+# make a wrapper function to run the ODE solver with the full Sobel set
+p_wrapper = function(r,K,g,thresh, C, time, odefunc, metricfunc) {
+  parms = list(r=r, thresh=thresh, K=K, g=g)
+  result = ode(y=C, times=time, func=odefunc, parms=parms) 
+  colnames(result)=c("time","C")
+  # get metrics
+  metrics=metricfunc(as.data.frame(result))
+  return(metrics)
+}
 
-    # make a wrapper function to run the ODE solver with the full Sobel set
-    p_wrapper = function(r,K,g,thresh, C, time, odefunc, metricfunc) {
-        parms = list(r=r, thresh=thresh, K=K, g=g)
-        result = ode(y=C, times=time, func=odefunc, parms=parms) 
-        colnames(result)=c("time","C")
-      # get metrics
-      metrics=metricfunc(as.data.frame(result))
-      return(metrics)
-    }
+# now use pmap to run the wrapper function
+allresults = as.data.frame(sens_C$X) %>% pmap(p_wrapper, thresh = 50, C= initial_carbon, time = years, odefunc=canopy_growth, metricfunc=compute_metrics)
 
-    # now use pmap to run the wrapper function
-    allresults = as.data.frame(sens_C$X) %>% pmap(p_wrapper, thresh = 50, C= initial_carbon, time = years, odefunc=canopy_growth, metricfunc=compute_metrics)
+# extract out results from pmap into a data frame
+allres = allresults %>% map_dfr(`[`,c("maxsize"))
+```
 
-    # extract out results from pmap into a data frame
-    allres = allresults %>% map_dfr(`[`,c("maxsize"))
-    ```
+5.  Graph the results and record the S & T Sobel indices
 
-5.  Graph the results and record the S & T Sobel indeces
+From what we are seeing based on the Sobel indices, the linear growth rate that occurs after the threshold is reached is not as important in determining the max forest size as the exponential growth rate and the carrying capacity. When examining the sensitivity analysis indices in column 1, it appears that the exponential growth rate (r) and the carrying capacity (K) have a more significant impact on determining the maximum forest size compared to the linear growth rate (g) after the threshold is reached. This is important as the climate continues to change because I would anticipate that climate change will cause the carrying capacity to decrease. As temperatures rise and weather patterns become more erratic, the carrying capacity of forests is expected to decrease. As we get hotter summers and wetter winters, the number of trees a forest can support will be limited to how many can survive through the hot summer. This logic also applies to the exponential growth rate (r), as it is likely to be highly variable in response to changing seasonal conditions. As we get hotter summers and wetter winters, the exponential growth rate will vary drastically based on the season. This will seriously impact maximum forest size as the exponential growth rate is the most influential parameter that we tested. In conclusion, the most impactful and influential parameters in this model are (r) and (K), these two parameters will be the key drivers in for understanding and predicting changes in forest size under changing environmental conditions. 
 
 ```{r}
 # create boxplot of max forest size
@@ -138,7 +142,7 @@ ggplot(tmp, aes(metric, value, col=metric))+
 ```
 
 ```{r}
-# Recor the Sobel indeces
+# Record the Sobel indeces
 sens_C_maxsize = sensitivity::tell(sens_C,allres$maxsize)
 
 # first-order indices (main effect without co-variance)
@@ -150,5 +154,3 @@ rownames(sens_C_maxsize$T)=c("r","K", "g")
 sens_C_maxsize$T
 
 ```
-
-From what I am seeing based on my Sobel indices, the linear growth rate that occurs after the threshold is reached is not as important in determining the max forest size as the exponential growth rate and the carrying capacity. This is important as the climate continues to change because I would anticipate that climate change will cause the carrying capacity to decrease. As we get hotter summers and wetter winters, the number of trees a forest can support will be limited to how many can survive through the hot summer. This logic also allpies to the exponential growth rate. As we get hotter summers and wetter winters, the exponential growth rate will vary drastically based on the season. This will seriously impact maximum forest size as the exponential growth rate is the most influential parameter that we tested.
